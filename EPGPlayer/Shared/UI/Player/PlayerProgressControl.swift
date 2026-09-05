@@ -159,6 +159,23 @@ struct PlayerProgressControl: View {
             videoLength = nil
             playbackTime = 0
         }
+        #if os(tvOS)
+        // No touch slider on tvOS, so map Siri Remote swipes to seeking instead.
+        .focusable()
+        .onMoveCommand { direction in
+            guard item.videoItem.type != .livestream, videoLength != nil else {
+                return
+            }
+            switch direction {
+            case .left:
+                seekBy(seconds: -10)
+            case .right:
+                seekBy(seconds: 10)
+            default:
+                break
+            }
+        }
+        #endif
     }
     
     func reload() {

@@ -260,6 +260,15 @@ struct PlayerView: View {
                 savePlaybackPosition()
             }
         })
+        #if os(tvOS)
+        // fullScreenCover doesn't auto-wire the Menu button on tvOS, so dismiss explicitly.
+        .onExitCommand {
+            dismiss()
+        }
+        .onPlayPauseCommand {
+            playerEvents.togglePlay.send()
+        }
+        #endif
         .onChange(of: hadPlayingState, { oldValue, newValue in
             if !oldValue && newValue {
                 resetIdleTimer()
