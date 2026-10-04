@@ -152,6 +152,13 @@ struct LiveChannelsView: View {
                                         }
                                         .menuStyle(.button)
                                         .buttonStyle(.plain)
+                                        .padding(.all, 6)
+                                        #if os(macOS)
+                                        .background(.fill)
+                                        #elseif os(iOS)
+                                        // The fill style is drawn black in a menu label on iOS 27.
+                                        .background(Color(uiColor: .secondarySystemBackground))
+                                        #endif
                                         #endif
                                     }
                                     .id(schedule.channel.id)
@@ -243,7 +250,8 @@ struct LiveChannelsView: View {
             videoItem: EPGLiveStreamItem(channel: schedule.channel, format: userSettings.tvLiveDefaultFormat, mode: userSettings.tvLiveDefaultMode, audioComponentType: program?.audioComponentType),
             title: program?.name ?? schedule.channel.name,
             subtitle: schedule.channel.name,
-            programDescription: [program?.description, program?.extended].compactMap { $0 }.joined(separator: "\n\n")
+            programDescription: [program?.description, program?.extended].compactMap { $0 }.joined(separator: "\n\n"),
+            program: program?.subtitleProgramInfo, programEnd: program?.endDate
         )
     }
     #endif

@@ -88,12 +88,18 @@ class PlayerItem: Identifiable {
     let title: String
     let subtitle: String?
     let programDescription: String?
-    
-    init(videoItem: any VideoItem, title: String, subtitle: String? = nil, programDescription: String? = nil) {
+    /// The program that is played, which helps translating its subtitles.
+    let program: SubtitleProgramInfo?
+    /// When the program of a live stream ends and the channel moves on to the next one.
+    let programEnd: Date?
+
+    init(videoItem: any VideoItem, title: String, subtitle: String? = nil, programDescription: String? = nil, program: SubtitleProgramInfo? = nil, programEnd: Date? = nil) {
         self.videoItem = videoItem
         self.title = title
         self.subtitle = subtitle
         self.programDescription = programDescription
+        self.program = program
+        self.programEnd = programEnd
     }
 }
 

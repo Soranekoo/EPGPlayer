@@ -77,9 +77,31 @@ struct PlayerView: View {
     @State var originalOrientation: UIInterfaceOrientation?
     #endif
     
+    #if os(iOS) || os(macOS)
+    @State var liveTranslator = LiveSubtitleTranslator()
+    /// The translations saved next to a downloaded video, newest first.
+    @State var savedTranslations: [SubtitleTranslation] = []
+    @State var savedSubtitles = SavedSubtitles()
+    /// Why Apple Intelligence can't be used, or nil when it can.
+    @State var appleIntelligenceProblem: String?
+    @State var appleIntelligenceLanguages: Set<Locale.LanguageCode>?
+    /// The top of the bottom controls, which the live translation stays above.
+    @State var controlsTop: CGFloat?
+    #endif
+    
+    var videoPlayer: VLCPlayer {
+        var player = VLCPlayer(videoItem: item.videoItem, httpHeaders: appState.client.headers, playerEvents: playerEvents, forceStrokeText: userSettings.$forceStrokeText, force16To9: userSettings.$force16To9, videoAspectRatio: userSettings.$videoAspectRatio, audioStereoMode: $audioStereoMode, playerState: $playerState, hadErrorState: $hadErrorState, hadPlayingState: $hadPlayingState)
+        #if os(iOS) || os(macOS)
+        player.liveTranslator = liveTranslator
+        player.translateSubtitles = userSettings.liveTranslation
+        player.savedSubtitles = savedSubtitles
+        #endif
+        return player
+    }
+    
     var body: some View {
         ZStack(alignment: .topLeading) {
-            VLCPlayer(videoItem: item.videoItem, httpHeaders: appState.client.headers, playerEvents: playerEvents, forceStrokeText: userSettings.$forceStrokeText, force16To9: userSettings.$force16To9, videoAspectRatio: userSettings.$videoAspectRatio, audioStereoMode: $audioStereoMode, playerState: $playerState, hadErrorState: $hadErrorState, hadPlayingState: $hadPlayingState)
+            videoPlayer
                 .ignoresSafeArea(edges: .vertical)
                 #if !os(tvOS)
                 .gesture(TapGesture().onEnded {
@@ -114,6 +136,16 @@ struct PlayerView: View {
                     .onTapGesture {
                         handleSelect()
                     }
+            }
+            #endif
+
+            #if os(iOS) || os(macOS)
+            // A live stream stops instead of pausing, which leaves no video to translate.
+            if !isExternalPlay && playerState != .stopping && playerState != .stopped {
+                let isLive = item.videoItem.supportsLiveTranslation
+                SubtitleOverlay(text: isLive ? liveTranslator.visibleText : savedSubtitles.visibleText, notice: isLive ? liveTranslator.notice : nil,
+                                controlsTop: playerUIOpacity == 1 ? controlsTop : nil)
+                    .ignoresSafeArea(edges: .vertical)
             }
             #endif
 
@@ -219,6 +251,11 @@ struct PlayerView: View {
                 // the HUD and immediately start scrubbing from the very same tap.
                 .allowsHitTesting(!isProgramInfoPresented)
                 #else
+                .onGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.frame(in: .named(SubtitleOverlay.coordinateSpace)).minY
+                } action: { top in
+                    controlsTop = top
+                }
                 .opacity(playerUIOpacity)
                 #endif
                 
@@ -272,6 +309,9 @@ struct PlayerView: View {
             }
             #endif
         }
+        #if os(iOS) || os(macOS)
+        .coordinateSpace(.named(SubtitleOverlay.coordinateSpace))
+        #endif
         .preferredColorScheme(.dark)
         .tint(.primary)
         .background(.black)
@@ -369,18 +409,27 @@ struct PlayerView: View {
             }
         })
         .onReceive(playerEvents.addVideoTrack) { track in
+            guard !videoTracks.contains(where: { $0.id == track.id }) else {
+                return
+            }
             videoTracks.append(track)
             if videoTracks.count == 1 {
                 activeVideoTrack = track
             }
         }
         .onReceive(playerEvents.addAudioTrack) { track in
+            guard !audioTracks.contains(where: { $0.id == track.id }) else {
+                return
+            }
             audioTracks.append(track)
             if audioTracks.count == 1 {
                 activeAudioTrack = track
             }
         }
         .onReceive(playerEvents.addTextTrack) { track in
+            guard !textTracks.contains(where: { $0.id == track.id }) else {
+                return
+            }
             textTracks.append(track)
             if userSettings.enableSubtitles && textTracks.count == 1 {
                 activeTextTrack = track
@@ -413,9 +462,14 @@ struct PlayerView: View {
             videoTracks = []
             audioTracks = []
             textTracks = []
+            // VLC shows no subtitles in the new media, so the subtitles are selected again when their track is added.
+            activeTextTrack = MediaTrack(id: "none", name: "text", codec: "")
             showPlayerUI()
             resetIdleTimer()
             fetchSavedPlaybackPosition()
+            #if os(iOS) || os(macOS)
+            liveTranslator.updateProgram(item.program)
+            #endif
         }
         #if os(tvOS)
         // Swipe either quick-seeks (Idle/Transport) or moves the scrub preview
@@ -484,6 +538,29 @@ struct PlayerView: View {
         }
         .onPlayPauseCommand {
             playerEvents.togglePlay.send()
+        }
+        #endif
+        #if os(iOS) || os(macOS)
+        .task {
+            liveTranslator.updateProgram(item.program)
+            loadSavedTranslations()
+            await loadAppleIntelligenceStatus()
+        }
+        .task(id: userSettings.liveTranslation) {
+            if userSettings.liveTranslation {
+                await followLivePrograms()
+            }
+        }
+        .onChange(of: liveTranslationSettings, initial: true) {
+            applyLiveTranslationSettings()
+        }
+        .onChange(of: userSettings.liveTranslation) { _, enabled in
+            // The stream has to be opened again to read its captions.
+            guard enabled, item.videoItem.supportsLiveTranslation, !liveTranslator.isAttached else {
+                return
+            }
+            savePlaybackPosition()
+            playerEvents.reloadMedia.send()
         }
         #endif
     }
@@ -570,7 +647,15 @@ struct PlayerView: View {
                 .pickerStyle(.menu)
             }
             
-            if !videoTracks.isEmpty || !audioTracks.isEmpty || !textTracks.isEmpty {
+            #if os(iOS) || os(macOS)
+            if item.videoItem.supportsLiveTranslation {
+                liveTranslationMenu
+            } else if !savedTranslations.isEmpty {
+                savedTranslationPicker
+            }
+            #endif
+            
+            if !videoTracks.isEmpty || !audioTracks.isEmpty || !textTracks.isEmpty || showsTranslationMenu {
                 Divider()
             }
             
@@ -726,6 +811,156 @@ struct PlayerView: View {
     }
 }
 
+extension PlayerView {
+    var showsTranslationMenu: Bool {
+        #if os(iOS) || os(macOS)
+        item.videoItem.supportsLiveTranslation || !savedTranslations.isEmpty
+        #else
+        false
+        #endif
+    }
+}
+
+#if os(iOS) || os(macOS)
+extension PlayerView {
+    /// The model selected last time, which is shared with the translation of downloaded videos.
+    var liveTranslationEngine: SubtitleTranslationEngine {
+        if let saved = SubtitleTranslationEngine(rawValue: userSettings.translationEngine), SubtitleTranslationEngine.supported.contains(saved) {
+            return saved
+        }
+        return SubtitleTranslationEngine.supported[0]
+    }
+
+    var liveTranslationLanguages: [String] {
+        SubtitleTranslationTarget.identifiers(for: liveTranslationEngine, appleIntelligenceLanguages: appleIntelligenceLanguages)
+    }
+
+    var liveTranslationTarget: String {
+        SubtitleTranslationTarget.defaultIdentifier(saved: userSettings.translationTargetLanguage, available: liveTranslationLanguages)
+    }
+
+    /// Everything that the live translation depends on, to apply changes to the translator.
+    var liveTranslationSettings: [String] {
+        [String(userSettings.liveTranslation), userSettings.translationEngine, userSettings.translationTargetLanguage,
+         userSettings.customModelAPIFormat, userSettings.customModelBaseURL, userSettings.customModelName,
+         appleIntelligenceProblem ?? "", appleIntelligenceLanguages.map { $0.map(\.identifier).sorted().joined(separator: ",") } ?? ""]
+    }
+
+    var liveTranslationMenu: some View {
+        Menu {
+            Toggle(isOn: userSettings.$liveTranslation) {
+                Text("Translate Subtitles")
+            }
+            Picker(selection: Binding(get: { liveTranslationTarget }, set: { userSettings.translationTargetLanguage = $0 })) {
+                ForEach(liveTranslationLanguages, id: \.self) { identifier in
+                    Text(verbatim: SubtitleTranslationTarget.displayName(of: identifier))
+                        .tag(identifier)
+                }
+            } label: {
+                Text("Translate to")
+            }
+            .pickerStyle(.menu)
+            Picker(selection: Binding(get: { liveTranslationEngine }, set: { userSettings.translationEngine = $0.rawValue })) {
+                ForEach(SubtitleTranslationEngine.supported) { engine in
+                    Text(engine.name)
+                        .tag(engine)
+                }
+            } label: {
+                Text("Model")
+            }
+            .pickerStyle(.menu)
+            if let message = liveTranslator.statusMessage {
+                Section {
+                    Text(verbatim: message)
+                }
+            }
+        } label: {
+            Label("Translation", systemImage: "translate")
+        }
+    }
+
+    /// Picks the saved translation of a downloaded video to show over the video.
+    var savedTranslationPicker: some View {
+        Picker(selection: Binding(get: { savedSubtitles.translation }, set: { savedSubtitles.show($0) })) {
+            Text("Off")
+                .tag(SubtitleTranslation?.none)
+            ForEach(savedTranslations, id: \.self) { translation in
+                Text(verbatim: translation.languageName)
+                    .tag(Optional(translation))
+            }
+        } label: {
+            Label("Translation", systemImage: "translate")
+        }
+        .pickerStyle(.menu)
+    }
+
+    func loadSavedTranslations() {
+        guard item.videoItem.url.isFileURL else {
+            return
+        }
+        savedTranslations = SubtitleTranslationStore.translations(forVideo: item.videoItem.url)
+        // Like the broadcast subtitles, the newest translation is shown when subtitles are enabled.
+        if userSettings.enableSubtitles, let newest = savedTranslations.first {
+            savedSubtitles.show(newest)
+        }
+    }
+
+    func applyLiveTranslationSettings() {
+        let engine = liveTranslationEngine
+        let customConfiguration = CustomModelConfiguration(settings: userSettings, keychain: appState.keychain)
+        let problem: String?
+        switch engine {
+        case .appleIntelligence:
+            problem = appleIntelligenceProblem
+        case .customModel:
+            problem = customConfiguration.isComplete ? nil : String(localized: "Set up the custom model in Settings first.")
+        }
+        liveTranslator.configure(enabled: userSettings.liveTranslation && item.videoItem.supportsLiveTranslation, engine: engine,
+                                 target: liveTranslationTarget, customConfiguration: customConfiguration, problem: problem)
+    }
+
+    func loadAppleIntelligenceStatus() async {
+        #if compiler(>=6.4) && canImport(FoundationModels)
+        if #available(iOS 27.0, macOS 27.0, *), item.videoItem.supportsLiveTranslation {
+            appleIntelligenceProblem = PrivateCloudComputeTranslationModel.availabilityMessage
+            if appleIntelligenceProblem == nil {
+                appleIntelligenceLanguages = await PrivateCloudComputeTranslationModel.supportedLanguageCodes()
+            }
+        }
+        #endif
+    }
+
+    /// Keeps the program information of a live stream current, since the channel moves on to the next program.
+    func followLivePrograms() async {
+        guard let liveStream = item.videoItem as? EPGLiveStreamItem, var end = item.programEnd else {
+            return
+        }
+        while !Task.isCancelled {
+            // Give the server a moment to switch to the next program.
+            let wait = end.timeIntervalSinceNow + 5
+            if wait > 0 {
+                try? await Task.sleep(for: .seconds(wait))
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            do {
+                let schedules = try await appState.client.api.getSchedulesBroadcasting(query: Operations.GetSchedulesBroadcasting.Input.Query(isHalfWidth: true)).ok.body.json
+                guard let program = schedules.first(where: { $0.channel.id == liveStream.channel.id })?.programs.first else {
+                    return
+                }
+                Logger.info("Current live program: \(pii: program.name)")
+                liveTranslator.updateProgram(program.subtitleProgramInfo)
+                end = max(program.endDate, .now + 60)
+            } catch {
+                Logger.error("Failed to load the current program: \(error)")
+                end = .now + 60
+            }
+        }
+    }
+}
+#endif
+
 enum PlaybackSpeed: Float, Hashable, Identifiable {
     case x0_5 = 0.5
     case x0_75 = 0.75
@@ -758,9 +993,9 @@ enum PlaybackSpeed: Float, Hashable, Identifiable {
 extension VLCMediaPlayerState {
     var isPlaying: Bool {
         switch self {
-        case .buffering, .playing:
+        case .playing:
             return true
-        case .opening, .paused, .error, .stopped, .stopping:
+        case .nothingSpecial, .opening, .paused, .error, .stopped, .stopping:
             return false
         @unknown default:
             return false

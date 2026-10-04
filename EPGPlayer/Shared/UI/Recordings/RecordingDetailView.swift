@@ -29,6 +29,8 @@ struct RecordingDetailView: View {
     #if os(tvOS)
     @State private var showActionMenu = false
     #endif
+    @State private var translatingVideoItem: LocalVideoItem? = nil
+    @State private var translatableVideoItems: [LocalVideoItem] = []
 
     var body: some View {
         ScrollView(.vertical) {
@@ -80,7 +82,7 @@ struct RecordingDetailView: View {
                                 Section("TS") {
                                     ForEach(item.videoItems.filter({ $0.type == .ts }), id: \.epgId) { videoItem in
                                         Button {
-                                            appState.playingItem = PlayerItem(videoItem: videoItem, title: item.name, subtitle: item.channelName, programDescription: [item.shortDesc, item.extendedDesc].compactMap { $0 }.joined(separator: "\n\n"))
+                                            appState.playingItem = PlayerItem(videoItem: videoItem, title: item.name, subtitle: item.channelName, programDescription: [item.shortDesc, item.extendedDesc].compactMap { $0 }.joined(separator: "\n\n"), program: programInfo)
                                             #if os(macOS)
                                             openWindow(id: "player-window")
                                             #endif
@@ -96,7 +98,7 @@ struct RecordingDetailView: View {
                                 Section("Encoded") {
                                     ForEach(item.videoItems.filter({ $0.type == .encoded }), id: \.epgId) { videoItem in
                                         Button {
-                                            appState.playingItem = PlayerItem(videoItem: videoItem, title: item.name, subtitle: item.channelName, programDescription: [item.shortDesc, item.extendedDesc].compactMap { $0 }.joined(separator: "\n\n"))
+                                            appState.playingItem = PlayerItem(videoItem: videoItem, title: item.name, subtitle: item.channelName, programDescription: [item.shortDesc, item.extendedDesc].compactMap { $0 }.joined(separator: "\n\n"), program: programInfo)
                                             #if os(macOS)
                                             openWindow(id: "player-window")
                                             #endif
@@ -124,6 +126,12 @@ struct RecordingDetailView: View {
                         RecordingDownloadMenu(item: item)
                             .menuStyle(.button)
                             .buttonStyle(.borderless)
+                        #endif
+
+                        #if os(iOS) || os(macOS)
+                        if !translatableVideoItems.isEmpty {
+                            translateMenu(videoItems: translatableVideoItems)
+                        }
                         #endif
                     }
                 }
@@ -211,7 +219,48 @@ struct RecordingDetailView: View {
             dismiss()
         }
         #endif
+        #if os(iOS) || os(macOS)
+        .task(id: playableLocalVideoItems.map(\.id)) {
+            // Encoded downloads can be in any container, while only MPEG-TS files carry ARIB subtitles.
+            translatableVideoItems = playableLocalVideoItems.filter { ARIBCaptionExtractor.isTransportStream($0.url) }
+        }
+        .sheet(item: $translatingVideoItem) { videoItem in
+            SubtitleTranslationView(videoURL: videoItem.url, recordingName: item.name, videoName: videoItem.name, program: programInfo)
+        }
+        #endif
     }
+
+    /// The program information that helps translating the subtitles.
+    var programInfo: SubtitleProgramInfo {
+        SubtitleProgramInfo(title: item.name, descriptions: [item.shortDesc, item.extendedDesc])
+    }
+
+    #if os(iOS) || os(macOS)
+    var playableLocalVideoItems: [LocalVideoItem] {
+        (item as? LocalRecordedItem)?._videoItems.filter({ $0.canPlay }) ?? []
+    }
+
+    func translateMenu(videoItems: [LocalVideoItem]) -> some View {
+        Menu {
+            ForEach(videoItems) { videoItem in
+                Button {
+                    translatingVideoItem = videoItem
+                } label: {
+                    Text(verbatim: videoItem.name)
+                    Text(verbatim: ByteCountFormatter().string(fromByteCount: videoItem.fileSize))
+                }
+            }
+        } label: {
+            HStack(alignment: .center) {
+                Image(systemName: "translate")
+                    .font(.system(size: 25))
+                Text("Translate")
+            }
+        }
+        .menuStyle(.button)
+        .buttonStyle(.borderless)
+    }
+    #endif
 
     func deleteRecording() {
         deleteInProgress = true

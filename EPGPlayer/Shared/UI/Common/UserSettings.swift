@@ -66,6 +66,18 @@ class UserSettings: ObservableObject {
     @AppStorage("tv_live_default_format") var tvLiveDefaultFormat: String = "m2ts"
     @AppStorage("tv_live_default_mode") var tvLiveDefaultMode: Int = 0
     #endif
+
+    // Translation Settings
+    @AppStorage("translation_engine") var translationEngine = ""
+    @AppStorage("translation_target_language") var translationTargetLanguage = ""
+    /// Translate the subtitles of online videos and live streams while they play.
+    @AppStorage("live_translation") var liveTranslation = false
+    @AppStorage("custom_model_api_format") var customModelAPIFormat = ""
+    @AppStorage("custom_model_base_url") var customModelBaseURL = ""
+    @AppStorage("custom_model_name") var customModelName = ""
+
+    /// Keychain key of the API key of the custom translation model.
+    static let customModelAPIKeyKeychainKey = "custom_model_api_key"
     
     // Debug Settings
     #if DEBUG
