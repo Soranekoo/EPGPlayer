@@ -711,8 +711,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/lorenzofiamingo/swiftui-cached-async-image";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.1.1;
+				kind = exactVersion;
+				version = 2.1.1;
 			};
 		};
 		8A850F252DB523A0004E9328 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
